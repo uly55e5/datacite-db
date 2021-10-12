@@ -14,10 +14,11 @@ import (
 )
 
 func main() {
-	var count = 0
+	var count int64 = 0
+	var lastcount int64 = 0
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://datacite:datacite@10.22.13.12:27017"))
 	if err != nil {
 		println(err.Error())
 		return
@@ -51,6 +52,8 @@ func main() {
 	if err != nil {
 
 	}
+	count,err = collection.CountDocuments(context.TODO(),nil,nil)
+
 	for _, fileinfo := range files {
 		file, err := os.Open(datadir + fileinfo.Name())
 		if err != nil {
@@ -84,8 +87,11 @@ func main() {
 						println(err.Error())
 						continue
 					}
-					count += len(res.InsertedIDs)
-					println(count)
+					count += int64(len(res.InsertedIDs))
+					if(count-lastcount > 100000) {
+						println(count)
+						lastcount = count
+					}
 
 				}
 			}
