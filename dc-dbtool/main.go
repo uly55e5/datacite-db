@@ -8,34 +8,49 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"time"
 )
 
+const (
+	dbConnStr = "mongodb://datacite:datacite@localhost:27017"
+	dataDir   = "/home/uly55e5/Projekte/ipb/dcdump/temp-20210917/"
+)
+
 func main() {
-	var count int64 = 0
-	var lastcount int64 = 0
+
+	var (
+		count        int64 = 0
+		lastcount    int64 = 0
+		modified     int64 = 0
+		lastmodified int64 = 0
+		client       *mongo.Client
+		err          error
+		files        []fs.FileInfo
+		collection   *mongo.Collection
+		models       []mongo.WriteModel = nil
+	)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://datacite:datacite@10.22.13.12:27017"))
-	if err != nil {
+	if client, err = mongo.Connect(ctx, options.Client().ApplyURI(dbConnStr)); err != nil {
 		println(err.Error())
 		return
 	}
 	defer func() {
 		if err = client.Disconnect(ctx); err != nil {
 			println(err.Error())
-			panic(err)
+			return
 		}
 	}()
 
-	if err = client.Ping(ctx, readpref.Primary()); err != nil {
+	if client.Ping(ctx, readpref.Primary()) != nil {
 		println(err.Error())
 		return
 	}
 
-	collection := client.Database("datacite-go").Collection("datacite")
+	collection = client.Database("datacite-go").Collection("datacite")
 	indexName, err := collection.Indexes().CreateOne(
 		context.TODO(),
 		mongo.IndexModel{
@@ -44,21 +59,22 @@ func main() {
 		},
 	)
 	if err != nil {
-		println(err.Error())
+		println("Error while creating index:", err.Error())
 	}
-	println(indexName)
-	const datadir = "/home/david/Projekte/datacite-data/temp-20210917/"
-	files, err := ioutil.ReadDir(datadir)
-	if err != nil {
+	println("Index:", indexName)
 
+	if files, err = ioutil.ReadDir(dataDir); err != nil {
+		println("Read error:", err.Error())
+		return
 	}
-	count,err = collection.CountDocuments(context.TODO(),nil,nil)
+
+	count, err = collection.CountDocuments(context.TODO(), bson.D{}, nil)
 
 	for _, fileinfo := range files {
-		file, err := os.Open(datadir + fileinfo.Name())
+		var file *os.File
+		file, err = os.Open(dataDir + fileinfo.Name())
 		if err != nil {
-			print(err.Error())
-			file.Close()
+			print("File open error:", err.Error())
 			continue
 		}
 		lineReader := bufio.NewScanner(file)
@@ -75,27 +91,52 @@ func main() {
 				println(err.Error())
 				continue
 			}
-			var res *mongo.InsertManyResult
 			if data, ok := v["data"]; ok {
 				dataarray := data.([]interface{})
 				if len(dataarray) > 0 {
-					inctx, incancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer incancel()
-					var ordered bool = false
-					var inOptions = options.InsertManyOptions{Ordered: &ordered}
-					if res, err = collection.InsertMany(inctx, dataarray, &inOptions); err != nil {
-						println(err.Error())
-						continue
+					for _, dataset := range dataarray {
+						id := dataset.(map[string]interface{})["id"]
+						updated := dataset.(map[string]interface{})["attributes"].(map[string]interface{})["updated"]
+						var filter = bson.D{{"id", id}, {"attributes.updated", bson.M{"$lt": updated}}}
+						model := mongo.NewReplaceOneModel().SetUpsert(true).SetReplacement(dataset).SetFilter(filter)
+						models = append(models, model)
 					}
-					count += int64(len(res.InsertedIDs))
-					if(count-lastcount > 100000) {
-						println(count)
-						lastcount = count
+					if len(models) > 10000 {
+						var bulkErr mongo.BulkWriteException
+						var res *mongo.BulkWriteResult
+						inctx, incancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer incancel()
+						inOptions := options.BulkWrite().SetOrdered(false)
+						if res, err = collection.BulkWrite(inctx, models, inOptions); err != nil {
+							print("*")
+							if bulkErr, ok = err.(mongo.BulkWriteException); ok {
+								for _, berr := range bulkErr.WriteErrors {
+									go func(berr mongo.BulkWriteError) {
+										if berr.Code != 11000 {
+											println(berr.Message)
+										}
+									}(berr)
+								}
+							} else {
+								println(err.Error())
+							}
+						} else {
+							print(".")
+							modified += res.ModifiedCount
+							count += res.UpsertedCount
+						}
+						models = nil
 					}
-
+				}
+				if count-lastcount > 100000 || modified-lastmodified > 100000 {
+					println(count, modified)
+					lastcount = count
+					lastmodified = modified
 				}
 			}
+
 		}
 		file.Close()
 	}
+	println(count, modified)
 }
