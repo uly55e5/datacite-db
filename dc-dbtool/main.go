@@ -4,10 +4,7 @@ import (
 	"context"
 	"datacite-db/datacite"
 	"flag"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"golang.org/x/sync/semaphore"
 	"io/fs"
 	"io/ioutil"
@@ -37,66 +34,57 @@ func main() {
 	dbNamePtr := flag.String("database", dbNameDefault, "Database name")
 	flag.Parse()
 	var (
-		client     *mongo.Client
 		err        error
 		files      []fs.FileInfo
 		collection *mongo.Collection
 	)
 
-	var count = datacite.Count{}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if client, err = mongo.Connect(ctx, options.Client().ApplyURI(*dbConnPtr)); err != nil {
-		println(err.Error())
+	if collection, err = datacite.ConnectDatabase(dbConnPtr, dbNamePtr); err != nil {
 		return
 	}
+
 	defer func() {
-		if err = client.Disconnect(ctx); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err = collection.Database().Client().Disconnect(ctx); err != nil {
 			println(err.Error())
 			return
 		}
 	}()
-
-	if err = client.Ping(ctx, readpref.Primary()); err != nil {
-		println(err.Error())
-		return
-	}
-
-	idModels := datacite.GetIndexes()
-
-	collection = client.Database(*dbNamePtr).Collection("datacite")
-	var names []string
-	if names, err = collection.Indexes().CreateMany(context.Background(), idModels); err != nil {
-		println("Error while creating index:", err.Error())
-	}
-	println("Index:", names)
 
 	if files, err = ioutil.ReadDir(*dataDirPtr); err != nil {
 		println("Read error:", err.Error())
 		return
 	}
 
-	count.Upserted, err = collection.CountDocuments(context.Background(), bson.D{}, nil)
+	var (
+		modelChan     = make(chan *mongo.ReplaceOneModel, *dataSetBufferSizePtr)
+		countChan     = make(chan datacite.Count, *countBufferSizePtr)
+		doneChan      = make(chan bool)
+		countDoneChan = make(chan bool)
+		wg            sync.WaitGroup
+		sem           = semaphore.NewWeighted(*parallelDatasetsPtr)
+		fileSem       = semaphore.NewWeighted(*parallelFilesPtr)
+	)
 
-	var modelChan = make(chan *mongo.ReplaceOneModel, *dataSetBufferSizePtr)
-	var countChan = make(chan datacite.Count, *countBufferSizePtr)
-	var doneChan = make(chan bool)
-	var wg sync.WaitGroup
+	go datacite.LogCount(countChan, countDoneChan)
 	for i := 0; i < *maxDbWorkersPtr; i++ {
 		wg.Add(1)
-		go datacite.AddModels(modelChan, collection, countChan, doneChan, &wg)
+		go datacite.AddDocuments(modelChan, collection, countChan, doneChan, &wg)
 	}
-	go datacite.LogCount(count, countChan)
-	sem := semaphore.NewWeighted(*parallelDatasetsPtr)
-	fileSem := semaphore.NewWeighted(*parallelFilesPtr)
+
 	for _, fileInfo := range files {
 		if err = fileSem.Acquire(context.Background(), 1); err != nil {
 			println("Could not acquire file semaphore.", err.Error())
 		}
 		datacite.ReadFile(*dataDirPtr+"/"+fileInfo.Name(), sem, modelChan, fileSem)
 	}
-	time.Sleep(60 * time.Second)
-	doneChan <- true
+	time.Sleep(10 * time.Second)
+	for i := 0; i < *maxDbWorkersPtr; i++ {
+		doneChan <- true
+	}
 	wg.Wait()
-	println(count.Upserted, count.Modified)
+	countDoneChan <- true
+	time.Sleep(10 * time.Second)
+	println("All done.")
 }

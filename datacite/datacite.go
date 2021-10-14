@@ -7,6 +7,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"golang.org/x/sync/semaphore"
 	"os"
 	"sync"
@@ -16,6 +17,7 @@ import (
 type Count struct {
 	Upserted int64
 	Modified int64
+	Read     int64
 }
 
 func SendReplaceModel(dataset interface{}, modelChan chan *mongo.ReplaceOneModel, sem *semaphore.Weighted) {
@@ -27,67 +29,81 @@ func SendReplaceModel(dataset interface{}, modelChan chan *mongo.ReplaceOneModel
 	sem.Release(1)
 }
 
-func AddModels(m chan *mongo.ReplaceOneModel, collection *mongo.Collection, cCount chan Count, cDone chan bool, wg *sync.WaitGroup) {
+func AddDocuments(cData chan *mongo.ReplaceOneModel, collection *mongo.Collection, cCount chan Count, cDone chan bool, wg *sync.WaitGroup) {
 	var (
 		models = make([]mongo.WriteModel, 10000, 10000)
 		err    error
 		ok     bool
-		i      = 0
-		done   = false
+		i      int64 = 0
+		done         = false
 	)
 	for {
 		select {
-		case models[i] = <-m:
+		case models[i] = <-cData:
 			i++
 		case done = <-cDone:
 		}
 
-		if i == 10000 || done {
+		if i == 10000 || (done && i > 0) {
 			var bulkErr mongo.BulkWriteException
 			var res *mongo.BulkWriteResult
-			inCtx, inCancel := context.WithTimeout(context.Background(), 120*time.Second)
+			inCtx, inCancel := context.WithTimeout(context.Background(), 600*time.Second)
 			inOptions := options.BulkWrite().SetOrdered(false)
-			if res, err = collection.BulkWrite(inCtx, models, inOptions); err != nil {
+			if res, err = collection.BulkWrite(inCtx, models[:i], inOptions); err != nil {
 				print("*")
 				if bulkErr, ok = err.(mongo.BulkWriteException); ok {
 					for _, writeError := range bulkErr.WriteErrors {
 						go func(writeError mongo.BulkWriteError) {
 							if writeError.Code != 11000 {
-								println(writeError.Message)
+								println("Write error:", writeError.Message)
 							}
 						}(writeError)
 					}
 				} else {
-					println(err.Error())
+					println("Bulkwrite error:", err.Error())
 				}
 			} else {
 				print(".")
 			}
 			if res != nil {
-				cCount <- Count{res.UpsertedCount, res.ModifiedCount}
+				cCount <- Count{res.UpsertedCount, res.ModifiedCount, i}
+			} else {
+				cCount <- Count{0, 0, i}
 			}
 			i = 0
 			inCancel()
 		}
 		if done {
+			println("Processing done...")
 			wg.Done()
 			return
 		}
 	}
 }
 
-func LogCount(count Count, cCount chan Count) {
-	var lastCount int64 = 0
-	var lastModified int64 = 0
-	println(count.Upserted, count.Modified)
+func LogCount(cCount chan Count, cDone chan bool) {
+	var lastCount = Count{0, 0, 0}
+	var count = Count{0, 0, 0}
+	var newCount Count
+	var done = false
 	for {
-		newCount := <-cCount
+		select {
+		case newCount = <-cCount:
+		case done = <-cDone:
+		}
+
+		if done {
+			println("Done:", count.Upserted, count.Modified, count.Read)
+			return
+		}
 		count.Upserted += newCount.Upserted
 		count.Modified += newCount.Modified
-		if count.Upserted-lastCount > 100000 || count.Modified-lastModified > 100000 {
-			println(count.Upserted, count.Modified)
-			lastCount = count.Upserted
-			lastModified = count.Modified
+		count.Read += newCount.Read
+		if count.Upserted-lastCount.Upserted >= 100000 || count.Modified-lastCount.Modified >= 100000 || count.Read-lastCount.Read >= 1000000 {
+			println(" U:", count.Upserted, "M:", count.Modified, "R:", count.Read)
+			lastCount.Upserted = count.Upserted
+			lastCount.Modified = count.Modified
+			lastCount.Read = count.Read
 		}
 	}
 }
@@ -136,7 +152,8 @@ func ReadFile(fileName string, sem *semaphore.Weighted, modelChan chan *mongo.Re
 	return
 }
 
-func GetIndexes() []mongo.IndexModel {
+func CreateIndexes(collection *mongo.Collection) {
+	var err error
 	var idModels = []mongo.IndexModel{
 		{
 			Keys:    bson.D{{Key: "id", Value: 1}},
@@ -155,5 +172,37 @@ func GetIndexes() []mongo.IndexModel {
 			Options: options.Index(),
 		},
 	}
-	return idModels
+	var names []string
+	if names, err = collection.Indexes().CreateMany(context.Background(), idModels); err != nil {
+		println("Error while creating index:", err.Error())
+	}
+	for _, name := range names {
+		println("Index:", name)
+	}
+}
+
+func ConnectDatabase(dbConnPtr *string, dbNamePtr *string) (*mongo.Collection, error) {
+	var err error
+	var client *mongo.Client
+	var collection *mongo.Collection
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if client, err = mongo.Connect(ctx, options.Client().ApplyURI(*dbConnPtr)); err != nil {
+		println(err.Error())
+		return nil, err
+	}
+
+	if err = client.Ping(ctx, readpref.Primary()); err != nil {
+		println(err.Error())
+		return nil, err
+	}
+	collection = client.Database(*dbNamePtr).Collection("datacite")
+	CreateIndexes(collection)
+	var count int64
+	if count, err = collection.EstimatedDocumentCount(context.Background(), options.EstimatedDocumentCount().SetMaxTime(10*time.Second)); err != nil {
+		println("Error while Counting:", err.Error())
+	}
+	println("Documents in database:", count)
+	return collection, nil
 }
