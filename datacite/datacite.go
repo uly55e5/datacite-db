@@ -9,6 +9,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/sync/semaphore"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -26,20 +27,25 @@ func SendReplaceModel(dataset interface{}, modelChan chan *mongo.ReplaceOneModel
 	sem.Release(1)
 }
 
-func AddModels(m chan *mongo.ReplaceOneModel, collection *mongo.Collection, cCount chan Count) {
+func AddModels(m chan *mongo.ReplaceOneModel, collection *mongo.Collection, cCount chan Count, cDone chan bool, wg *sync.WaitGroup) {
 	var (
 		models = make([]mongo.WriteModel, 10000, 10000)
 		err    error
 		ok     bool
 		i      = 0
+		done   = false
 	)
 	for {
-		models[i] = <-m
-		i++
-		if i == 10000 {
+		select {
+		case models[i] = <-m:
+			i++
+		case done = <-cDone:
+		}
+
+		if i == 10000 || done {
 			var bulkErr mongo.BulkWriteException
 			var res *mongo.BulkWriteResult
-			inCtx, inCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			inCtx, inCancel := context.WithTimeout(context.Background(), 120*time.Second)
 			inOptions := options.BulkWrite().SetOrdered(false)
 			if res, err = collection.BulkWrite(inCtx, models, inOptions); err != nil {
 				print("*")
@@ -62,6 +68,10 @@ func AddModels(m chan *mongo.ReplaceOneModel, collection *mongo.Collection, cCou
 			}
 			i = 0
 			inCancel()
+		}
+		if done {
+			wg.Done()
+			return
 		}
 	}
 }
@@ -108,8 +118,7 @@ func ReadLine(lineReader *bufio.Scanner, sem *semaphore.Weighted, modelChan chan
 func ReadFile(fileName string, sem *semaphore.Weighted, modelChan chan *mongo.ReplaceOneModel, fileSem *semaphore.Weighted) {
 	var file *os.File
 	var err error
-	file, err = os.Open(fileName)
-	if err != nil {
+	if file, err = os.Open(fileName); err != nil {
 		print("File open error:", err.Error())
 		return
 	}
@@ -125,4 +134,26 @@ func ReadFile(fileName string, sem *semaphore.Weighted, modelChan chan *mongo.Re
 	}
 	fileSem.Release(1)
 	return
+}
+
+func GetIndexes() []mongo.IndexModel {
+	var idModels = []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys:    bson.D{{"attributes.updated", 1}},
+			Options: options.Index(),
+		},
+		{
+			Keys:    bson.D{{"$**", "text"}},
+			Options: options.Index().SetLanguageOverride("dummy"),
+		},
+		{
+			Keys:    bson.D{{"attributes.types.citeproc", 1}},
+			Options: options.Index(),
+		},
+	}
+	return idModels
 }

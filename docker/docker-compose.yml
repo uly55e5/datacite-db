@@ -6,7 +6,7 @@ services:
   mongo-dc:
     image: mongo:latest
     volumes:
-      - /home/uly55e5/Projekte/ipb/datacite-db/data:/data/db
+      - /home/david/Projekte/datacite-db/data:/data/db
     restart: always
     environment:
       MONGO_INITDB_ROOT_USERNAME: datacite
