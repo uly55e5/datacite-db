@@ -6,7 +6,7 @@ services:
   mongo-dc:
     image: mongo:latest
     volumes:
-      - /home/david/Projekte/datacite-db/data:/data/db
+      - ./mongo-data:/data/db
     restart: always
     environment:
       MONGO_INITDB_ROOT_USERNAME: datacite
@@ -23,3 +23,7 @@ services:
       ME_CONFIG_MONGODB_ADMINUSERNAME: datacite
       ME_CONFIG_MONGODB_ADMINPASSWORD: datacite
       ME_CONFIG_MONGODB_SERVER: mongo-dc
+  fuji:
+    build: ../fuji
+    ports:
+      - 1071:1071

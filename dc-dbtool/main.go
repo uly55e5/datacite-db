@@ -8,6 +8,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"io/fs"
 	"io/ioutil"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,7 +40,7 @@ func main() {
 		collection *mongo.Collection
 	)
 
-	if collection, err = datacite.ConnectDatabase(dbConnPtr, dbNamePtr); err != nil {
+	if collection, err = datacite.ConnectDataCiteCollection(dbConnPtr, dbNamePtr); err != nil {
 		return
 	}
 
@@ -70,14 +71,16 @@ func main() {
 	go datacite.LogCount(countChan, countDoneChan)
 	for i := 0; i < *maxDbWorkersPtr; i++ {
 		wg.Add(1)
-		go datacite.AddDocuments(modelChan, collection, countChan, doneChan, &wg)
+		go datacite.AddDocuments(modelChan, collection, countChan, doneChan, &wg, *dataSetBufferSizePtr)
 	}
 
 	for _, fileInfo := range files {
 		if err = fileSem.Acquire(context.Background(), 1); err != nil {
 			println("Could not acquire file semaphore.", err.Error())
 		}
-		datacite.ReadFile(*dataDirPtr+"/"+fileInfo.Name(), sem, modelChan, fileSem)
+		if strings.HasSuffix(fileInfo.Name(), ".json") || strings.HasSuffix(fileInfo.Name(), ".ndjson") {
+			datacite.ReadFile(*dataDirPtr+"/"+fileInfo.Name(), sem, modelChan, fileSem)
+		}
 	}
 	time.Sleep(10 * time.Second)
 	for i := 0; i < *maxDbWorkersPtr; i++ {
