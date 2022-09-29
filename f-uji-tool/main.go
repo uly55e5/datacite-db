@@ -67,21 +67,24 @@ func InsertRandomFuji(fujiUrlPtr *string, fujiUserPtr *string, fujiPwdPtr *strin
 		sem.Release(1)
 		return
 	}
-	responseBody, err := getFujiResult(doi, fujiUrlPtr, fujiUserPtr, fujiPwdPtr)
-	if err != nil {
-		println(err.Error())
-		print("-")
-		sem.Release(1)
-		return
+	dcVals := []bool{true, false}
+	for _, dc := range dcVals {
+		responseBody, err := getFujiResult(doi, fujiUrlPtr, fujiUserPtr, fujiPwdPtr, dc)
+		if err != nil {
+			println(err.Error())
+			print("-")
+			sem.Release(1)
+			return
+		}
+		print("+")
+		fuji.InsertFujiDataset(responseBody, doi, dc)
 	}
-	print("+")
-	fuji.InsertFujiDataset(responseBody, doi)
 	sem.Release(1)
 }
 
-func getFujiResult(doi string, fujiUrlPtr *string, fujiUserPtr *string, fujiPwdPtr *string) (map[string]interface{}, error) {
+func getFujiResult(doi string, fujiUrlPtr *string, fujiUserPtr *string, fujiPwdPtr *string, useDC bool) (map[string]interface{}, error) {
 	var err error
-	response, err := getFujiResponse(doi, fujiUrlPtr, fujiUserPtr, fujiPwdPtr)
+	response, err := getFujiResponse(doi, fujiUrlPtr, fujiUserPtr, fujiPwdPtr, useDC)
 	if err != nil {
 		return nil, err
 	}
@@ -93,14 +96,14 @@ func getFujiResult(doi string, fujiUrlPtr *string, fujiUserPtr *string, fujiPwdP
 	return responseBody, err
 }
 
-func getFujiResponse(doi string, fujiUrlPtr *string, fujiUserPtr *string, fujiPwdPtr *string) (*http.Response, error) {
+func getFujiResponse(doi string, fujiUrlPtr *string, fujiUserPtr *string, fujiPwdPtr *string, useDc bool) (*http.Response, error) {
 	var httpClient = http.Client{}
 	var err error
 	body := struct {
 		ObjectIdentifier string `json:"object_identifier"`
 		TestDebug        bool   `json:"test_debug"`
 		Datacite         bool   `json:"use_datacite"`
-	}{"https://doi.org/" + doi, true, true}
+	}{"https://doi.org/" + doi, true, useDc}
 	bodyjson, err := json.Marshal(body)
 	if err != nil {
 		return nil, err

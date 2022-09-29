@@ -217,10 +217,10 @@ func CreateIndexes(collection *mongo.Collection) {
 		Options: options.Index().SetUnique(true),
 	})
 
-	/*idModels = append(idModels, mongo.IndexModel{
+	idModels = append(idModels, mongo.IndexModel{
 		Keys:    bson.D{{"$**", "text"}},
 		Options: options.Index().SetLanguageOverride("dummy"),
-	})*/
+	})
 	println("Creating Indexes...")
 	var names []string
 	if names, err = collection.Indexes().CreateMany(context.Background(), idModels); err != nil {

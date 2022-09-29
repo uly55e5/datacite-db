@@ -43,12 +43,15 @@ func GetRandomDatasetDoi() (string, error) {
 		return "", err
 	}
 	prefix := fmt.Sprintf("%v", prefixData["_id"])
-	dataciteCount := int64(prefixData["ds_count"].(int32))
-
+	years := prefixData["years"].(bson.A)
+	yearCount := len(years)
+	yearRnd := rand.Int63n(int64(yearCount))
+	yearData := years[yearRnd].(bson.M)
+	count := int64(yearData["count"].(int32))
+	year := int64(yearData["year"].(float64))
 	dataciteCollection := database.Collection("datacite")
-	dataciteNumber := rand.Int63n(dataciteCount)
-	dataciteResult := dataciteCollection.FindOne(ctx, bson.D{{"id", bson.D{{"$regex", "^" + prefix}}}, {"attributes.types.resourceTypeGeneral", "Dataset"}}, options.FindOne().SetHint(bson.D{{"id", 1}}).SetSkip(dataciteNumber).SetProjection(bson.D{{"id", 1}}))
-
+	dataciteNumber := rand.Int63n(count)
+	dataciteResult := dataciteCollection.FindOne(ctx, bson.D{{"id", bson.D{{"$regex", "^" + prefix}}}, {"attributes.types.resourceTypeGeneral", "Dataset"}, {"attributes.publicationYear", year}}, options.FindOne().SetHint(bson.D{{"id", 1}}).SetSkip(dataciteNumber).SetProjection(bson.D{{"id", 1}}))
 	var dataciteMap bson.M
 	err = dataciteResult.Decode(&dataciteMap)
 	if err != nil {
@@ -58,14 +61,14 @@ func GetRandomDatasetDoi() (string, error) {
 	return doi, nil
 }
 
-func InsertFujiDataset(responseBody map[string]interface{}, doi string) error {
+func InsertFujiDataset(responseBody map[string]interface{}, doi string, dc bool) error {
 	if database == nil {
 		return errors.New("database not connected")
 	}
 	var ctx = context.TODO()
 	var err error
 	resultCollection := database.Collection("fuji-result")
-	responseBody["_id"] = doi
+	responseBody["_id"] = bson.D{{"doi", doi}, {"DataCite", dc}}
 	_, err = resultCollection.InsertOne(ctx, responseBody)
 	return err
 }
@@ -75,9 +78,13 @@ func FujiExists(doi *string) bool {
 		println("Database not connected")
 		return false
 	}
-	count, _ := database.Collection("fuji-result").CountDocuments(context.Background(), bson.D{{"_id", doi}})
-	if count > 0 {
+	count, _ := database.Collection("fuji-result").CountDocuments(context.Background(), bson.D{{"_id.doi", doi}})
+	if count > 1 {
+
 		return true
+	}
+	if count > 0 {
+		print("_")
 	}
 	return false
 }
