@@ -27,6 +27,13 @@ const (
 	fujiUserDefault = "fuji"
 )
 
+type Method string
+
+const (
+	RANDOM       Method = "RANDOM"
+	CREATOR_LIST Method = "CREATORS"
+)
+
 var sem *semaphore.Weighted
 
 func main() {
@@ -41,6 +48,7 @@ func main() {
 	fujiUrlPtr := flag.String("fuji-url", fujiUrlDefault, "F-UJI API URl")
 	fujiUserPtr := flag.String("fuji-user", fujiUserDefault, "F-UJI user name")
 	fujiPwdPtr := flag.String("fuji-pwd", fujiPwdDefault, "F-UJI password")
+	selectionMethod := flag.String("method", "RANDOM", "Set the method for dataset selection")
 	flag.Parse()
 	rand.Seed(time.Now().Unix())
 	fuji.ConnectToDatabase(dbConnPtr, dbNamePtr)
@@ -80,6 +88,10 @@ func InsertRandomFuji(fujiUrlPtr *string, fujiUserPtr *string, fujiPwdPtr *strin
 		fuji.InsertFujiDataset(responseBody, doi, dc)
 	}
 	sem.Release(1)
+}
+
+func insertFromCreatorList(fujiUrlPtr *string, fujiUserPtr *string, fujiPwdPtr *string, fileNamePtr *string) {
+
 }
 
 func getFujiResult(doi string, fujiUrlPtr *string, fujiUserPtr *string, fujiPwdPtr *string, useDC bool) (map[string]interface{}, error) {
